@@ -12,12 +12,23 @@ import sys
 from mcp.server.fastmcp import FastMCP
 
 from research.search import get_paper_text, list_papers, list_projekte, semantic_search
+from research.experiments import (
+    compare_experiments as _compare_experiments,
+    get_experiment as _get_experiment,
+    get_fold_summary as _get_fold_summary,
+    list_experiments as _list_experiments,
+    summarize_project as _summarize_project,
+)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 log = logging.getLogger("research-mcp")
 
 mcp = FastMCP("research")
 
+
+# ---------------------------------------------------------------------------
+# Paper-Bibliothek
+# ---------------------------------------------------------------------------
 
 @mcp.tool()
 def search_papers(
@@ -31,7 +42,8 @@ def search_papers(
     Findet Textstellen auch dann, wenn andere Begriffe verwendet werden als in
     der Suchanfrage. Gibt Textausschnitte mit Titel, Jahr und Seitenzahl zurueck.
     Benutze dieses Tool, um herauszufinden, was in den gelesenen Papern zu einem
-    Thema steht.
+    Thema steht - etwa um einen Befund aus den Experimenten mit der Literatur
+    abzugleichen.
 
     Args:
         query: Thema oder Frage in natuerlicher Sprache, z.B. "warum Warmup beim Training"
@@ -58,7 +70,7 @@ def search_papers(
 
 @mcp.tool()
 def list_projects() -> list[dict]:
-    """Zeigt alle Projekte und Bereiche der Bibliothek mit Anzahl der Paper.
+    """Zeigt alle Projekte und Bereiche der Paper-Bibliothek mit Anzahl der Paper.
 
     Ein Projekt ist die oberste Gliederung (z.B. "masterarbeit"), ein Bereich
     eine Untergliederung darin (z.B. "baselines", "related-work"). Benutze
@@ -97,15 +109,100 @@ def read_paper(paper_id: int, max_chars: int = 6000) -> dict:
     return get_paper_text(paper_id, max_chars=max_chars)
 
 
+# ---------------------------------------------------------------------------
+# Experimente
+# ---------------------------------------------------------------------------
+
 @mcp.tool()
-def get_run_metrics(run_id: str) -> dict:
-    """Holt die Metriken eines Trainingslaufs.
+def analyze_project(projekt: str, metric: str | None = None) -> dict:
+    """Fasst ALLE Laeufe eines Projekts in einem Aufruf zusammen - fuer die Gesamtanalyse.
+
+    Das ist das richtige Tool fuer Fragen wie "analysiere alle meine Testlaeufe",
+    "welche Hyperparameter haengen mit dem Ergebnis zusammen", "gibt es Ausreisser"
+    oder "was sollte ich als naechstes testen". Liefert in einem Objekt:
+
+    - jeden Lauf mit flachen Hyperparametern und zusammengefassten Metriken
+    - welche Hyperparameter ueberhaupt variiert wurden und welche konstant sind
+    - Korrelationen zwischen numerischen Hyperparametern und JEDER Metrik
+    - die verfuegbaren Metriknamen und die Laeufe mit hoher Fold-Streuung
+
+    Die Korrelationen sind deskriptiv und beruhen oft auf wenigen Laeufen - sie
+    sind Anhaltspunkte, kein Kausalnachweis. Deute sie im Kontext.
+
+    Fuer Vorschlaege, was als Naechstes zu testen ist, kannst du die Befunde
+    anschliessend mit search_papers gegen die Literatur abgleichen.
 
     Args:
-        run_id: Die ID des Laufs, z.B. "abc123"
+        projekt: Name des Projekts, z.B. "masterarbeit"
+        metric: Optional die Zielmetrik, die im Fokus stehen soll, z.B.
+                "std_val_dbm_mse". Wird sie weggelassen, waehlt das Tool selbst
+                eine aus - korreliert wird ohnehin gegen alle Metriken. Die
+                gueltigen Namen stehen im Feld "verfuegbare_metriken".
     """
-    # TODO: gegen MLflow / W&B austauschen
-    return {"run_id": run_id, "final_loss": 2.31, "steps": 5000, "status": "completed"}
+    return _summarize_project(projekt, metric=metric)
+
+
+@mcp.tool()
+def list_experiments(projekt: str | None = None) -> list[dict]:
+    """Listet Trainings- und Testlaeufe mit Modell, Status und Datum auf.
+
+    Nur der Ueberblick. Fuer eine Gesamtanalyse aller Laeufe nutze
+    analyze_project, fuer einen einzelnen Lauf get_experiment.
+
+    Args:
+        projekt: Optional auf ein Projekt einschraenken, z.B. "masterarbeit".
+                 Weglassen, um alle Laeufe zu sehen.
+    """
+    runs = _list_experiments(projekt)
+    if not runs:
+        return [{"info": "Keine Experimente gefunden. Ergebnisse nach data/experiments/<projekt>/<run_id>/ legen."}]
+    return runs
+
+
+@mcp.tool()
+def get_experiment(run_id: str, projekt: str | None = None) -> dict:
+    """Gibt Hyperparameter und Ergebnisse eines einzelnen Laufs vollstaendig zurueck.
+
+    Nutze zuerst list_experiments oder analyze_project, um gueltige run_ids zu
+    bekommen.
+
+    Args:
+        run_id: Name des Laufs, z.B. "dcgan_run_005"
+        projekt: Optional, um die Suche einzugrenzen
+    """
+    return _get_experiment(run_id, projekt)
+
+
+@mcp.tool()
+def get_fold_summary(run_id: str, projekt: str | None = None) -> dict:
+    """Fasst k-fold-Cross-Validation-Ergebnisse eines Laufs statistisch zusammen.
+
+    Gibt pro Metrik Mittelwert, Standardabweichung, Minimum und Maximum ueber
+    alle Folds zurueck - nicht die Rohwerte. Warnt automatisch, wenn eine
+    Metrik stark ueber die Folds streut (Hinweis auf instabiles Training oder
+    einen unguenstigen Split).
+
+    Args:
+        run_id: Name des Laufs, z.B. "dcgan_run_005"
+        projekt: Optional, um die Suche einzugrenzen
+    """
+    return _get_fold_summary(run_id, projekt)
+
+
+@mcp.tool()
+def compare_experiments(run_ids: list[str], projekt: str | None = None) -> dict:
+    """Vergleicht mehrere Laeufe und hebt hervor, was sie unterscheidet.
+
+    Zeigt nur die *abweichenden* Hyperparameter (nicht die ganze Config) und
+    stellt die Ergebnis-Metriken nebeneinander. Ideal fuer die gezielte Frage,
+    welche einzelne Konfigurationsaenderung welchen Effekt hatte. Fuer den
+    Gesamtueberblick ueber alle Laeufe nutze stattdessen analyze_project.
+
+    Args:
+        run_ids: Liste von Laufnamen, z.B. ["dcgan_run_005", "dcgan_run_006"]
+        projekt: Optional, um die Suche einzugrenzen
+    """
+    return _compare_experiments(run_ids, projekt)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-CHUNK_SIZE = 1200
+CHUNK_SIZE = 900
 CHUNK_OVERLAP = 200
 MIN_CHUNK = 120
 
