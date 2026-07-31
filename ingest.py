@@ -5,6 +5,7 @@ Aufruf:
     uv run ingest.py --path C:/pfad     # anderer Ordner
     uv run ingest.py --force            # alles neu indexieren
     uv run ingest.py --stats            # nur Bestand anzeigen
+    uv run ingest.py --prune            # Einträge ohne PDF entfernen
 """
 
 from __future__ import annotations

@@ -20,6 +20,12 @@ from research.experiments import (
     summarize_project as _summarize_project,
 )
 
+from research.files import read_text_file, list_files
+from research.thesis import parse_thesis
+ 
+CODE_SUFFIXES = (".py", ".toml", ".md", ".txt", ".cfg", ".ini")
+THESIS_SUFFIXES = (".tex", ".md", ".markdown", ".txt")
+
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 log = logging.getLogger("research-mcp")
 
@@ -203,6 +209,62 @@ def compare_experiments(run_ids: list[str], projekt: str | None = None) -> dict:
         projekt: Optional, um die Suche einzugrenzen
     """
     return _compare_experiments(run_ids, projekt)
+
+
+@mcp.tool()
+def read_code(path: str, max_chars: int = 100_000) -> dict:
+    """Reads a source file from the project so its current content is available.
+ 
+    Use this to see the up-to-date version of a file in the research-mcp
+    project (e.g. "server.py", "research/thesis.py", "pyproject.toml")
+    instead of relying on a pasted copy. Only files inside the project and
+    of an allowed type can be read.
+ 
+    Args:
+        path: Project-relative path, e.g. "research/search.py"
+        max_chars: Maximum number of characters to return
+    """
+    return read_text_file(path, CODE_SUFFIXES, max_chars=max_chars)
+ 
+@mcp.tool()
+def list_code() -> list[dict]:
+    """Lists the source files of the project that read_code can open."""
+    files = list_files(CODE_SUFFIXES)
+    return files or [{"info": "No source files found."}]
+ 
+@mcp.tool()
+def read_thesis(path: str, markdown: bool = False, max_chars: int = 100_000) -> dict:
+    """Reads a thesis file (LaTeX or Markdown) and splits it into sentences.
+ 
+    Returns each sentence with whether it carries a citation and which cite
+    keys, so the model can separate uncited claims from cited ones. This is
+    the entry point for the citation assistant: read the thesis, then judge
+    which uncited sentences are citation-worthy and search the library for
+    support.
+ 
+    Args:
+        path: Project-relative path to the .tex or .md file
+        markdown: Set true for Markdown/pandoc ([@key]) instead of LaTeX
+        max_chars: Maximum characters of the file to parse
+    """
+    raw = read_text_file(path, THESIS_SUFFIXES, max_chars=max_chars)
+    if "error" in raw:
+        return raw
+ 
+    sentences = parse_thesis(raw["text"], markdown=markdown)
+    cited = sum(1 for s in sentences if s.has_citation)
+    return {
+        "path": raw["path"],
+        "truncated": raw["truncated"],
+        "n_sentences": len(sentences),
+        "n_cited": cited,
+        "n_uncited": len(sentences) - cited,
+        "sentences": [
+            {"index": s.index, "text": s.text,
+             "has_citation": s.has_citation, "cite_keys": s.cite_keys}
+            for s in sentences
+        ],
+    }
 
 
 if __name__ == "__main__":
