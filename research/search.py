@@ -149,3 +149,83 @@ def get_paper_text(paper_id: int, max_chars: int = 6000, conn: sqlite3.Connectio
     finally:
         if own_conn:
             conn.close()
+
+def find_evidence(
+    statement: str,
+    limit: int = 5,
+    projekt: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> list[dict[str, Any]]:
+    """Sucht Belegstellen fuer eine EINZELNE Aussage - Basis des Citation Assistant.
+
+    Anders als semantic_search gibt diese Funktion den VOLLEN Chunk-Text zurueck
+    (nicht die gekuerzte Vorschau), damit das Modell im Chat inhaltlich pruefen
+    kann, ob die Passage die Aussage wirklich stuetzt. Ausserdem enthaelt jeder
+    Treffer die arxiv_id und den chunk_index - fuer spaetere Verknuepfung mit
+    einem .bib-Key und fuer die Evaluation.
+
+    Die Rueckgabe ist nach Aehnlichkeit absteigend geordnet (bester zuerst), was
+    recall@k und MRR direkt auswertbar macht.
+    """
+    from .embeddings import embed_query
+
+    own_conn = conn is None
+    conn = conn or connect()
+    try:
+        vector = sqlite_vec.serialize_float32(embed_query(statement))
+        k = limit * 8 if projekt else limit
+
+        rows = conn.execute(
+            """
+            SELECT p.id            AS paper_id,
+                   p.title         AS title,
+                   p.authors       AS authors,
+                   p.year          AS year,
+                   p.arxiv_id      AS arxiv_id,
+                   p.projekt       AS projekt,
+                   p.bereich       AS bereich,
+                   p.file_path     AS file_path,
+                   c.chunk_index   AS chunk_index,
+                   c.page_start    AS page_start,
+                   c.page_end      AS page_end,
+                   c.text          AS text,
+                   v.distance      AS distance
+            FROM (
+                SELECT chunk_id, distance
+                FROM chunk_vectors
+                WHERE embedding MATCH ? AND k = ?
+            ) AS v
+            JOIN chunks c ON c.id = v.chunk_id
+            JOIN papers p ON p.id = c.paper_id
+            WHERE (? IS NULL OR p.projekt = ?)
+            ORDER BY v.distance
+            LIMIT ?
+            """,
+            (vector, k, projekt, projekt, limit),
+        ).fetchall()
+
+        return [
+            {
+                "rank": i + 1,
+                "paper_id": r["paper_id"],
+                "title": r["title"],
+                "authors": r["authors"],
+                "year": r["year"],
+                "arxiv_id": r["arxiv_id"],
+                "projekt": r["projekt"],
+                "bereich": r["bereich"],
+                "page": (
+                    str(r["page_start"])
+                    if r["page_start"] == r["page_end"]
+                    else f"{r['page_start']}-{r['page_end']}"
+                ),
+                "chunk_index": r["chunk_index"],
+                "passage": " ".join(r["text"].split()),
+                "score": round(1.0 - r["distance"] / 2.0, 3),
+                "source": r["file_path"],
+            }
+            for i, r in enumerate(rows)
+        ]
+    finally:
+        if own_conn:
+            conn.close()

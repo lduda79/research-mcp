@@ -11,7 +11,7 @@ import sys
 
 from mcp.server.fastmcp import FastMCP
 
-from research.search import get_paper_text, list_papers, list_projekte, semantic_search
+from research.search import find_evidence, get_paper_text, list_papers, list_projekte, semantic_search
 from research.experiments import (
     compare_experiments as _compare_experiments,
     get_experiment as _get_experiment,
@@ -22,7 +22,7 @@ from research.experiments import (
 
 from research.files import read_text_file, list_files
 from research.thesis import parse_thesis
- 
+
 CODE_SUFFIXES = (".py", ".toml", ".md", ".txt", ".cfg", ".ini")
 THESIS_SUFFIXES = (".tex", ".md", ".markdown", ".txt")
 
@@ -211,37 +211,86 @@ def compare_experiments(run_ids: list[str], projekt: str | None = None) -> dict:
     return _compare_experiments(run_ids, projekt)
 
 
+# ---------------------------------------------------------------------------
+# Citation Assistant
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def find_citation_candidates(
+    statement: str,
+    limit: int = 5,
+    projekt: str | None = None,
+) -> list[dict]:
+    """Findet Belegstellen in der Bibliothek fuer eine EINZELNE Aussage.
+
+    Kernwerkzeug des Citation Assistant. Fuer eine konkrete inhaltliche Aussage
+    aus der Thesis (z.B. "Warmup stabilisiert das Training") sucht dieses Tool
+    die aehnlichsten Passagen aus den eigenen Papern und gibt sie nach Relevanz
+    geordnet zurueck - jeweils mit vollem Passagentext, Paper, Seite, arXiv-ID
+    und Score.
+
+    Wichtig fuer die Beurteilung: Pruefe anhand des zurueckgegebenen
+    Passagentexts, ob die Quelle die Aussage WIRKLICH stuetzt, bevor du sie
+    vorschlaegst. Schlage nur Treffer mit klarem inhaltlichem Bezug und
+    ausreichend hohem Score vor - lieber keinen Vorschlag als einen schwachen.
+    Nutze dieses Tool nur fuer zitierwuerdige Aussagen (Behauptungen ueber den
+    Stand der Forschung), nicht fuer Meta-Saetze wie "In diesem Kapitel zeigen
+    wir ...".
+
+    Args:
+        statement: Die einzelne Aussage, fuer die ein Beleg gesucht wird
+        limit: Maximale Anzahl der Kandidaten (geordnet, bester zuerst)
+        projekt: Optional auf ein Projekt einschraenken, z.B. "masterarbeit"
+    """
+    limit = max(1, min(limit, 20))
+    try:
+        candidates = find_evidence(statement, limit=limit, projekt=projekt)
+    except Exception as exc:
+        log.exception("Belegsuche fehlgeschlagen")
+        return [{"error": f"Belegsuche fehlgeschlagen: {exc}"}]
+
+    if not candidates:
+        return [{"info": "Keine Belegstellen gefunden. Ist die Bibliothek indexiert?"}]
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Datei-/Code-Zugriff
+# ---------------------------------------------------------------------------
+
 @mcp.tool()
 def read_code(path: str, max_chars: int = 100_000) -> dict:
     """Reads a source file from the project so its current content is available.
- 
+
     Use this to see the up-to-date version of a file in the research-mcp
     project (e.g. "server.py", "research/thesis.py", "pyproject.toml")
     instead of relying on a pasted copy. Only files inside the project and
     of an allowed type can be read.
- 
+
     Args:
         path: Project-relative path, e.g. "research/search.py"
         max_chars: Maximum number of characters to return
     """
     return read_text_file(path, CODE_SUFFIXES, max_chars=max_chars)
- 
+
+
 @mcp.tool()
 def list_code() -> list[dict]:
     """Lists the source files of the project that read_code can open."""
     files = list_files(CODE_SUFFIXES)
     return files or [{"info": "No source files found."}]
- 
+
+
 @mcp.tool()
 def read_thesis(path: str, markdown: bool = False, max_chars: int = 100_000) -> dict:
     """Reads a thesis file (LaTeX or Markdown) and splits it into sentences.
- 
+
     Returns each sentence with whether it carries a citation and which cite
     keys, so the model can separate uncited claims from cited ones. This is
     the entry point for the citation assistant: read the thesis, then judge
     which uncited sentences are citation-worthy and search the library for
     support.
- 
+
     Args:
         path: Project-relative path to the .tex or .md file
         markdown: Set true for Markdown/pandoc ([@key]) instead of LaTeX
@@ -250,7 +299,7 @@ def read_thesis(path: str, markdown: bool = False, max_chars: int = 100_000) -> 
     raw = read_text_file(path, THESIS_SUFFIXES, max_chars=max_chars)
     if "error" in raw:
         return raw
- 
+
     sentences = parse_thesis(raw["text"], markdown=markdown)
     cited = sum(1 for s in sentences if s.has_citation)
     return {
