@@ -14,3 +14,6 @@ data/
 .venv/
 __pycache__/
 .env
+
+# Other
+config.yaml

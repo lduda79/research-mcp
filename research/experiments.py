@@ -1,18 +1,16 @@
-"""Liest Experimentergebnisse direkt von der Platte.
+"""Read experiment results straight from disk.
 
-Anders als der Paper-Teil gibt es hier keine Datenbank, kein Chunking und
-keine Embeddings: die JSON- und CSV-Dateien sind bereits strukturiert. Der
-MCP-Server liest sie bei Bedarf und fasst sie zusammen, statt Rohdaten
-durchzureichen.
+Unlike the paper side there is no database, no chunking and no embeddings:
+the JSON and CSV files are already structured. The MCP server reads them on
+demand and summarizes them instead of passing raw data through.
 
-Erwartete Ablage (Namen sind flexibel, siehe Konstanten unten):
+Locations come from config.yaml: each project has an experiments folder with
+one subfolder per run:
 
-    data/experiments/<projekt>/<run_id>/
-        hparams.json     Hyperparameter
-        results.json     Ergebnisse / Metriken
-        folds.csv        optional, eine Zeile pro Fold
-
-Konfigurierbar ueber die Umgebungsvariable RESEARCH_EXPERIMENTS.
+    <project's experiments folder>/<run_id>/
+        hparams.json     hyperparameters
+        results.json     results / metrics
+        folds.csv        optional, one row per fold
 """
 
 from __future__ import annotations
@@ -20,20 +18,25 @@ from __future__ import annotations
 import csv
 import json
 import math
-import os
 from pathlib import Path
 from typing import Any
 
-from .db import PROJECT_ROOT
-
-EXPERIMENTS_DIR = Path(
-    os.environ.get("RESEARCH_EXPERIMENTS", PROJECT_ROOT / "data" / "experiments")
-)
+from .config import load_config
 
 HPARAM_NAMES = ("hparams.json", "hyperparameters.json", "config.json", "params.json")
 RESULT_NAMES = ("cv_summary.json", "results.json", "result.json", "metrics.json", "scores.json", "summary.json")
 
 NON_METRIC_KEYS = ("fold", "epoch", "epochs", "epochs_run", "step", "index", "k")
+
+
+def _experiment_folders(project: str | None = None) -> list[tuple[str, Path]]:
+    """(project_name, experiments folder) from the config, optionally filtered."""
+    cfg = load_config()
+    pairs = cfg.folders_of_kind("experiments")
+    if project:
+        pairs = [(name, folder) for name, folder in pairs if name == project]
+    return pairs
+
 
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
@@ -43,7 +46,7 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except FileNotFoundError:
         return None
     except (json.JSONDecodeError, OSError) as exc:
-        return {"_error": f"{path.name} nicht lesbar: {exc}"}
+        return {"_error": f"{path.name} not readable: {exc}"}
 
 
 def _first_existing(run_dir: Path, names: tuple[str, ...]) -> Path | None:
@@ -55,7 +58,7 @@ def _first_existing(run_dir: Path, names: tuple[str, ...]) -> Path | None:
 
 
 def _stats(values: list[float]) -> dict[str, float]:
-    """Mittelwert, Standardabweichung, Min und Max einer Zahlenreihe."""
+    """Mean, standard deviation, min and max of a number series."""
     n = len(values)
     mean = sum(values) / n
     variance = sum((v - mean) ** 2 for v in values) / (n - 1) if n > 1 else 0.0
@@ -69,7 +72,7 @@ def _stats(values: list[float]) -> dict[str, float]:
 
 
 def _numeric_lists(data: dict[str, Any]) -> dict[str, list[float]]:
-    """Findet alle Felder, die eine Liste von Zahlen sind (z.B. fold_fid)."""
+    """Find all fields that are a list of numbers (e.g. fold_fid)."""
     out: dict[str, list[float]] = {}
     for key, value in data.items():
         if isinstance(value, list) and len(value) > 1 and all(
@@ -78,32 +81,25 @@ def _numeric_lists(data: dict[str, Any]) -> dict[str, list[float]]:
             out[key] = [float(x) for x in value]
     return out
 
-def _run_dirs(projekt: str | None = None) -> list[Path]:
-    if not EXPERIMENTS_DIR.exists():
-        return []
 
-    dirs: list[Path] = []
-    such_wurzel = EXPERIMENTS_DIR / projekt if projekt else EXPERIMENTS_DIR
-    if not such_wurzel.exists():
-        return []
-    
-    for pfad in such_wurzel.rglob("*"):
-        if pfad.is_dir() and (
-            _first_existing(pfad, HPARAM_NAMES) or _first_existing(pfad, RESULT_NAMES)
-        ):
-            dirs.append(pfad)
-    return sorted(dirs)
+def _run_dirs(project: str | None = None) -> list[tuple[str, Path]]:
+    """All run folders as (project_name, path), across all configured projects."""
+    result: list[tuple[str, Path]] = []
+    for name, folder in _experiment_folders(project):
+        if not folder.exists():
+            continue
+        for path in sorted(folder.rglob("*")):
+            if path.is_dir() and (
+                _first_existing(path, HPARAM_NAMES) or _first_existing(path, RESULT_NAMES)
+            ):
+                result.append((name, path))
+    return result
 
 
-def _projekt_von(run_dir: Path) -> str:
-    rel = run_dir.resolve().relative_to(EXPERIMENTS_DIR.resolve())
-    return rel.parts[0] if len(rel.parts) > 1 else "sonstiges"
-
-
-def list_experiments(projekt: str | None = None) -> list[dict[str, Any]]:
-    """Alle Runs mit Kerninfos - fuer den Ueberblick, ohne Details."""
+def list_experiments(project: str | None = None) -> list[dict[str, Any]]:
+    """All runs with core info - for the overview, without details."""
     runs = []
-    for run_dir in _run_dirs(projekt):
+    for proj_name, run_dir in _run_dirs(project):
         results = _read_json(_first_existing(run_dir, RESULT_NAMES)) if _first_existing(run_dir, RESULT_NAMES) else {}
         hparams = _read_json(_first_existing(run_dir, HPARAM_NAMES)) if _first_existing(run_dir, HPARAM_NAMES) else {}
         results = results or {}
@@ -111,51 +107,53 @@ def list_experiments(projekt: str | None = None) -> list[dict[str, Any]]:
 
         runs.append({
             "run_id": run_dir.name,
-            "projekt": _projekt_von(run_dir),
+            "project": proj_name,
             "model": hparams.get("model"),
-            "status": results.get("status", "unbekannt"),
+            "status": results.get("status", "unknown"),
             "timestamp": results.get("timestamp"),
             "has_folds": bool(_first_existing(run_dir, ("folds.csv",)) or _numeric_lists(results)),
         })
     return runs
 
 
-def _find_run(run_id: str, projekt: str | None = None) -> Path | None:
-    for run_dir in _run_dirs(projekt):
+def _find_run(run_id: str, project: str | None = None) -> tuple[str, Path] | None:
+    for proj_name, run_dir in _run_dirs(project):
         if run_dir.name == run_id:
-            return run_dir
+            return proj_name, run_dir
     return None
 
 
-def get_experiment(run_id: str, projekt: str | None = None) -> dict[str, Any]:
-    """Hyperparameter und Ergebnisse eines einzelnen Runs."""
-    run_dir = _find_run(run_id, projekt)
-    if run_dir is None:
-        return {"error": f"Kein Run '{run_id}' gefunden."}
+def get_experiment(run_id: str, project: str | None = None) -> dict[str, Any]:
+    """Hyperparameters and results of a single run."""
+    found = _find_run(run_id, project)
+    if found is None:
+        return {"error": f"No run '{run_id}' found."}
+    proj_name, run_dir = found
 
     hparam_file = _first_existing(run_dir, HPARAM_NAMES)
     result_file = _first_existing(run_dir, RESULT_NAMES)
 
     return {
         "run_id": run_id,
-        "projekt": _projekt_von(run_dir),
+        "project": proj_name,
         "hparams": _read_json(hparam_file) if hparam_file else None,
         "results": _read_json(result_file) if result_file else None,
         "files": [p.name for p in sorted(run_dir.iterdir()) if p.is_file()],
     }
 
 
-def get_fold_summary(run_id: str, projekt: str | None = None) -> dict[str, Any]:
-    """Fasst k-fold-Ergebnisse zusammen: Mittelwert, Streuung, bester/schlechtester Fold.
+def get_fold_summary(run_id: str, project: str | None = None) -> dict[str, Any]:
+    """Summarize k-fold results: mean, spread, best/worst fold.
 
-    Drei akzeptierte Formen, in dieser Reihenfolge:
-      1. folds.csv                - eine Zeile je Fold
-      2. "per_fold": [ {..}, .. ] - eine Liste von Objekten je Fold (cv_summary.json)
-      3. "fold_xy": [0.1, 0.2, ..] - eine Liste von Zahlen je Metrik
+    Three accepted forms, in this order:
+      1. folds.csv                - one row per fold
+      2. "per_fold": [ {..}, .. ] - a list of objects per fold (cv_summary.json)
+      3. "fold_xy": [0.1, 0.2, ..] - a list of numbers per metric
     """
-    run_dir = _find_run(run_id, projekt)
-    if run_dir is None:
-        return {"error": f"Kein Run '{run_id}' gefunden."}
+    found = _find_run(run_id, project)
+    if found is None:
+        return {"error": f"No run '{run_id}' found."}
+    _, run_dir = found
 
     csv_file = _first_existing(run_dir, ("folds.csv", "cv.csv", "cross_val.csv"))
     if csv_file:
@@ -164,40 +162,40 @@ def get_fold_summary(run_id: str, projekt: str | None = None) -> dict[str, Any]:
     result_file = _first_existing(run_dir, RESULT_NAMES)
     results = _read_json(result_file) if result_file else None
     if not results:
-        return {"run_id": run_id, "info": "Keine Ergebnisdatei gefunden."}
+        return {"run_id": run_id, "info": "No results file found."}
 
     per_fold = results.get("per_fold")
     if isinstance(per_fold, list) and per_fold and isinstance(per_fold[0], dict):
-        spalten: dict[str, list[float]] = {}
-        for eintrag in per_fold:
-            for key, value in eintrag.items():
+        columns: dict[str, list[float]] = {}
+        for entry in per_fold:
+            for key, value in entry.items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    spalten.setdefault(key, []).append(float(value))
-        metriken = {
-            name: _stats(werte)
-            for name, werte in spalten.items()
+                    columns.setdefault(key, []).append(float(value))
+        metrics = {
+            name: _stats(vals)
+            for name, vals in columns.items()
             if name.lower() not in NON_METRIC_KEYS
         }
         return {
             "run_id": run_id,
             "source": f"{result_file.name} (per_fold)",
             "n_folds": len(per_fold),
-            "metrics": metriken,
-            "warnings": _stabilitaets_hinweise(metriken),
+            "metrics": metrics,
+            "warnings": _stability_warnings(metrics),
         }
 
-    listen = _numeric_lists(results)
-    if listen:
-        metriken = {name: _stats(werte) for name, werte in listen.items()}
+    lists = _numeric_lists(results)
+    if lists:
+        metrics = {name: _stats(vals) for name, vals in lists.items()}
         return {
             "run_id": run_id,
             "source": result_file.name,
-            "metrics": metriken,
-            "n_folds": max(len(w) for w in listen.values()),
-            "warnings": _stabilitaets_hinweise(metriken),
+            "metrics": metrics,
+            "n_folds": max(len(v) for v in lists.values()),
+            "warnings": _stability_warnings(metrics),
         }
 
-    return {"run_id": run_id, "info": "Keine Fold-Daten gefunden (weder folds.csv, per_fold noch Zahlenlisten)."}
+    return {"run_id": run_id, "info": "No fold data found (neither folds.csv, per_fold nor numeric lists)."}
 
 
 def _fold_summary_from_csv(run_id: str, csv_file: Path) -> dict[str, Any]:
@@ -205,19 +203,19 @@ def _fold_summary_from_csv(run_id: str, csv_file: Path) -> dict[str, Any]:
         rows = list(csv.DictReader(handle))
 
     if not rows:
-        return {"run_id": run_id, "info": f"{csv_file.name} ist leer."}
+        return {"run_id": run_id, "info": f"{csv_file.name} is empty."}
 
-    spalten: dict[str, list[float]] = {}
+    columns: dict[str, list[float]] = {}
     for row in rows:
         for key, value in row.items():
             try:
-                spalten.setdefault(key, []).append(float(value))
+                columns.setdefault(key, []).append(float(value))
             except (ValueError, TypeError):
-                pass  
+                pass
 
-    metriken = {
-        name: _stats(werte)
-        for name, werte in spalten.items()
+    metrics = {
+        name: _stats(vals)
+        for name, vals in columns.items()
         if name.lower() not in ("fold", "epoch", "step", "index", "k")
     }
 
@@ -225,89 +223,84 @@ def _fold_summary_from_csv(run_id: str, csv_file: Path) -> dict[str, Any]:
         "run_id": run_id,
         "source": csv_file.name,
         "n_folds": len(rows),
-        "metrics": metriken,
-        "warnings": _stabilitaets_hinweise(metriken),
+        "metrics": metrics,
+        "warnings": _stability_warnings(metrics),
     }
 
 
-def _stabilitaets_hinweise(metriken: dict[str, dict[str, float]]) -> list[str]:
-    """Markiert auffaellig hohe Streuung ueber die Folds - oft ein Split-Problem."""
-    hinweise = []
-    for name, s in metriken.items():
+def _stability_warnings(metrics: dict[str, dict[str, float]]) -> list[str]:
+    """Flag unusually high spread across folds - often a split problem."""
+    warnings = []
+    for name, s in metrics.items():
         if s["mean"] and s["n"] > 1:
             rel = s["std"] / abs(s["mean"])
             if rel > 0.15:
-                hinweise.append(
-                    f"'{name}' streut stark ueber die Folds "
-                    f"(std/mean = {rel:.0%}); moeglicherweise instabiles Training "
-                    f"oder ein unguenstiger Split."
+                warnings.append(
+                    f"'{name}' varies strongly across folds "
+                    f"(std/mean = {rel:.0%}); possibly unstable training "
+                    f"or an unfavorable split."
                 )
-    return hinweise
+    return warnings
 
 
-def compare_experiments(run_ids: list[str], projekt: str | None = None) -> dict[str, Any]:
-    """Vergleicht mehrere Runs: welche Hyperparameter unterscheiden sich, wie die Metriken.
+def compare_experiments(run_ids: list[str], project: str | None = None) -> dict[str, Any]:
+    """Compare several runs: which hyperparameters differ, and the metrics.
 
-    Der eigentliche Nutzen: nur die *abweichenden* Hyperparameter werden gezeigt,
-    nicht die komplette Config. So sieht man sofort, was den Unterschied macht.
+    The real value: only the *differing* hyperparameters are shown, not the
+    whole config. So one immediately sees what makes the difference.
     """
-    experimente = []
+    experiments = []
     for rid in run_ids:
-        exp = get_experiment(rid, projekt)
+        exp = get_experiment(rid, project)
         if "error" not in exp:
-            experimente.append(exp)
+            experiments.append(exp)
 
-    if len(experimente) < 2:
-        return {"error": "Mindestens zwei gueltige Runs noetig zum Vergleichen."}
+    if len(experiments) < 2:
+        return {"error": "At least two valid runs are needed to compare."}
 
-    alle_hparams = [e.get("hparams") or {} for e in experimente]
-    alle_keys = set().union(*(h.keys() for h in alle_hparams))
+    all_hparams = [e.get("hparams") or {} for e in experiments]
+    all_keys = set().union(*(h.keys() for h in all_hparams))
 
-    unterschiede = {}
-    gemeinsam = {}
-    for key in sorted(alle_keys):
-        werte = [h.get(key) for h in alle_hparams]
-        if len(set(map(str, werte))) > 1:
-            unterschiede[key] = {rid: w for rid, w in zip(run_ids, werte)}
+    differing = {}
+    shared = {}
+    for key in sorted(all_keys):
+        values = [h.get(key) for h in all_hparams]
+        if len(set(map(str, values))) > 1:
+            differing[key] = {rid: v for rid, v in zip(run_ids, values)}
         else:
-            gemeinsam[key] = werte[0]
+            shared[key] = values[0]
 
-    metrik_vergleich: dict[str, dict[str, Any]] = {}
-    for e in experimente:
+    metric_comparison: dict[str, dict[str, Any]] = {}
+    for e in experiments:
         res = e.get("results") or {}
         for key, value in res.items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                metrik_vergleich.setdefault(key, {})[e["run_id"]] = value
+                metric_comparison.setdefault(key, {})[e["run_id"]] = value
 
     return {
-        "runs": [e["run_id"] for e in experimente],
-        "unterschiedliche_hparams": unterschiede,
-        "gemeinsame_hparams": gemeinsam,
-        "metriken": metrik_vergleich,
+        "runs": [e["run_id"] for e in experiments],
+        "differing_hparams": differing,
+        "shared_hparams": shared,
+        "metrics": metric_comparison,
     }
 
 
-def _flatten_metrics(run_dir: Path) -> dict[str, Any]:
-    """Zieht die zusammengefassten Zahlen eines Laufs auf eine Ebene.
-
-    Skalare Metriken (final_fid, val_accuracy, ...) direkt, k-fold-Metriken
-    als mean/std. So bekommt das Modell pro Lauf eine flache Zeile statt
-    verschachtelter Objekte.
-    """
+def _flatten_metrics(proj_name: str, run_dir: Path) -> dict[str, Any]:
+    """Pull a run's summary numbers onto one level."""
     result_file = _first_existing(run_dir, RESULT_NAMES)
     results = (_read_json(result_file) or {}) if result_file else {}
 
     flat: dict[str, Any] = {}
-    listen = _numeric_lists(results)
+    lists = _numeric_lists(results)
     for key, value in results.items():
-        if key in listen:
+        if key in lists:
             continue
         if key.lower() in NON_METRIC_KEYS or key.lower().startswith("cv_"):
             continue
         if isinstance(value, (int, float)) and not isinstance(value, bool):
-            flat[key] = value  
+            flat[key] = value
 
-    fold = get_fold_summary(run_dir.name, _projekt_von(run_dir))
+    fold = get_fold_summary(run_dir.name, proj_name)
     warnings = fold.get("warnings", [])
     for name, s in fold.get("metrics", {}).items():
         if f"{name}_mean" not in flat and f"mean_{name}" not in flat:
@@ -319,34 +312,34 @@ def _flatten_metrics(run_dir: Path) -> dict[str, Any]:
 
 
 def _correlations(runs: list[dict], hparam_keys: set[str], metric_key: str) -> list[dict]:
-    """Pearson-Korrelation zwischen jedem numerischen Hyperparameter und einer Metrik.
+    """Pearson correlation between each numeric hyperparameter and a metric.
 
-    Rein deterministisch. Gibt dem Modell Anhaltspunkte, welche Parameter
-    ueberhaupt mit dem Ergebnis zusammenhaengen - die Deutung bleibt beim Modell.
+    Purely deterministic. Gives the model hints about which parameters relate to
+    the result at all - the interpretation stays with the model.
     """
-    ergebnisse = []
+    results = []
     for hp in sorted(hparam_keys):
-        paare = [
+        pairs = [
             (r["hparams"][hp], r["metrics"][metric_key])
             for r in runs
             if isinstance(r["hparams"].get(hp), (int, float)) and not isinstance(r["hparams"].get(hp), bool)
             and metric_key in r["metrics"]
         ]
-        if len(paare) < 3:
+        if len(pairs) < 3:
             continue
-        xs, ys = zip(*paare)
+        xs, ys = zip(*pairs)
         if len(set(xs)) < 2:
             continue
         r = _pearson(list(xs), list(ys))
         if r is not None and abs(r) >= 0.5:
-            ergebnisse.append({
+            results.append({
                 "hyperparameter": hp,
-                "metrik": metric_key,
+                "metric": metric_key,
                 "pearson_r": round(r, 3),
-                "richtung": "hoeher -> groesser" if r > 0 else "hoeher -> kleiner",
-                "n": len(paare),
+                "direction": "higher -> larger" if r > 0 else "higher -> smaller",
+                "n": len(pairs),
             })
-    return sorted(ergebnisse, key=lambda e: -abs(e["pearson_r"]))
+    return sorted(results, key=lambda e: -abs(e["pearson_r"]))
 
 
 def _pearson(xs: list[float], ys: list[float]) -> float | None:
@@ -360,28 +353,27 @@ def _pearson(xs: list[float], ys: list[float]) -> float | None:
     return sxy / math.sqrt(sxx * syy)
 
 
-def summarize_project(projekt: str, metric: str | None = None) -> dict[str, Any]:
-    """Fasst ALLE Laeufe eines Projekts in einem Objekt zusammen - fuer die Gesamtanalyse.
+def summarize_project(project: str, metric: str | None = None) -> dict[str, Any]:
+    """Summarize ALL runs of a project in one object - for the overall analysis.
 
-    Enthaelt pro Lauf die flachen Hyperparameter und zusammengefassten Metriken,
-    dazu projektweite Hinweise: welche Hyperparameter variiert wurden, Korrelationen
-    zu jeder Metrik und die auffaelligsten Laeufe. Die Deutung ueberlaesst das Tool
-    bewusst dem Modell.
+    Contains per run the flat hyperparameters and summarized metrics, plus
+    project-wide hints: which hyperparameters were varied, correlations to every
+    metric, and the most notable runs. The interpretation is left to the model.
 
     Args:
-        projekt: Name des Projekts.
-        metric: Optional die Metrik, die im Fokus stehen soll (z.B. "std_val_dbm_mse").
-                Beeinflusst nur die Sortierung/Anzeige - korreliert wird immer alles.
+        project: name of the project.
+        metric: optional metric to focus on (e.g. "std_val_dbm_mse"). Only affects
+                ordering/display - correlation always runs over everything.
     """
-    run_dirs = _run_dirs(projekt)
+    run_dirs = _run_dirs(project)
     if not run_dirs:
-        return {"projekt": projekt, "info": "Keine Laeufe gefunden."}
+        return {"project": project, "info": "No runs found."}
 
     runs: list[dict] = []
-    for run_dir in run_dirs:
+    for proj_name, run_dir in run_dirs:
         hparam_file = _first_existing(run_dir, HPARAM_NAMES)
         hparams = (_read_json(hparam_file) or {}) if hparam_file else {}
-        flat = _flatten_metrics(run_dir)
+        flat = _flatten_metrics(proj_name, run_dir)
         runs.append({
             "run_id": run_dir.name,
             "hparams": hparams,
@@ -390,76 +382,76 @@ def summarize_project(projekt: str, metric: str | None = None) -> dict[str, Any]
             "warnings": flat["warnings"],
         })
 
-    numerische_hp: set[str] = set()
-    variiert: dict[str, list[Any]] = {}
-    konstant: dict[str, Any] = {}
-    alle_hp = set().union(*(r["hparams"].keys() for r in runs)) if runs else set()
-    for hp in sorted(alle_hp):
-        werte = [r["hparams"].get(hp) for r in runs]
-        eindeutig = {str(w) for w in werte}
-        if len(eindeutig) > 1:
-            variiert[hp] = sorted(eindeutig)
+    numeric_hp: set[str] = set()
+    varied: dict[str, list[Any]] = {}
+    constant: dict[str, Any] = {}
+    all_hp = set().union(*(r["hparams"].keys() for r in runs)) if runs else set()
+    for hp in sorted(all_hp):
+        values = [r["hparams"].get(hp) for r in runs]
+        unique = {str(w) for w in values}
+        if len(unique) > 1:
+            varied[hp] = sorted(unique)
             if all(isinstance(r["hparams"].get(hp), (int, float)) and not isinstance(r["hparams"].get(hp), bool)
                    for r in runs if hp in r["hparams"]):
-                numerische_hp.add(hp)
-        elif werte:
-            konstant[hp] = werte[0]
+                numeric_hp.add(hp)
+        elif values:
+            constant[hp] = values[0]
 
-    metrik_zaehler: dict[str, int] = {}
+    metric_counter: dict[str, int] = {}
     for r in runs:
         for mk in r["metrics"]:
-            metrik_zaehler[mk] = metrik_zaehler.get(mk, 0) + 1
-    alle_metriken = sorted(metrik_zaehler)
+            metric_counter[mk] = metric_counter.get(mk, 0) + 1
+    all_metrics = sorted(metric_counter)
 
-    korrelierbar = [m for m, n in metrik_zaehler.items() if n >= 3]
+    correlatable = [m for m, n in metric_counter.items() if n >= 3]
 
-    if metric and metric in metrik_zaehler:
-        haupt_metrik = metric
+    if metric and metric in metric_counter:
+        main_metric = metric
     else:
-        kandidaten = [m for m in metrik_zaehler if m.endswith("_mean")] or alle_metriken
-        haupt_metrik = max(kandidaten, key=lambda m: metrik_zaehler[m]) if kandidaten else None
+        candidates = [m for m in metric_counter if m.endswith("_mean")] or all_metrics
+        main_metric = max(candidates, key=lambda m: metric_counter[m]) if candidates else None
 
-    korrelationen: dict[str, list[dict]] = {}
-    for mk in sorted(korrelierbar, key=lambda m: (m != haupt_metrik, m)):
-        treffer = _correlations(runs, numerische_hp, mk)
-        if treffer:
-            korrelationen[mk] = treffer
+    correlations: dict[str, list[dict]] = {}
+    for mk in sorted(correlatable, key=lambda m: (m != main_metric, m)):
+        hits = _correlations(runs, numeric_hp, mk)
+        if hits:
+            correlations[mk] = hits
 
-    fehlende_metrik = metric if (metric and metric not in metrik_zaehler) else None
+    missing_metric = metric if (metric and metric not in metric_counter) else None
 
-    instabil = [r["run_id"] for r in runs if r["warnings"]]
+    unstable = [r["run_id"] for r in runs if r["warnings"]]
 
-    ergebnis = {
-        "projekt": projekt,
+    result = {
+        "project": project,
         "n_runs": len(runs),
         "runs": runs,
-        "variierte_hyperparameter": variiert,
-        "konstante_hyperparameter": konstant,
-        "verfuegbare_metriken": alle_metriken,
-        "haupt_metrik": haupt_metrik,
-        "korrelationen": korrelationen,
-        "instabile_laeufe": instabil,
+        "varied_hyperparameters": varied,
+        "constant_hyperparameters": constant,
+        "available_metrics": all_metrics,
+        "main_metric": main_metric,
+        "correlations": correlations,
+        "unstable_runs": unstable,
     }
     if len(runs) < 3:
-        ergebnis["analyse_hinweis"] = (
-            f"Nur {len(runs)} Lauf/Laeufe - fuer Korrelationen sind mindestens 3 noetig. "
-            "Vergleiche die Laeufe stattdessen direkt (siehe 'runs') oder nutze "
-            "compare_experiments fuer ein Diff der Hyperparameter."
+        result["analysis_note"] = (
+            f"Only {len(runs)} run(s) - correlations need at least 3. "
+            "Compare the runs directly instead (see 'runs') or use "
+            "compare_experiments for a hyperparameter diff."
         )
-    elif not korrelationen:
-        ergebnis["analyse_hinweis"] = (
-            "Keine nennenswerten Korrelationen gefunden - entweder wurden keine "
-            "numerischen Hyperparameter variiert, oder es gibt keinen klaren Zusammenhang."
+    elif not correlations:
+        result["analysis_note"] = (
+            "No notable correlations found - either no numeric hyperparameters "
+            "were varied, or there is no clear relationship."
         )
     else:
-        ergebnis["hinweis"] = (
-            "Korrelationen sind rein deskriptiv und beruhen oft auf wenigen Laeufen - "
-            "kein Kausalnachweis. Bitte im Kontext der Hyperparameter deuten."
+        result["note"] = (
+            "Correlations are purely descriptive and often based on few runs - "
+            "not a causal proof. Please interpret in context of the hyperparameters."
         )
 
-    if fehlende_metrik:
-        ergebnis["warnung"] = (
-            f"Gewuenschte Metrik '{fehlende_metrik}' kommt in den Laeufen nicht vor. "
-            f"Verfuegbar: {alle_metriken}."
+    if missing_metric:
+        result["warning"] = (
+            f"Requested metric '{missing_metric}' does not appear in the runs. "
+            f"Available: {all_metrics}."
         )
-    return ergebnis
+    return result

@@ -1,4 +1,4 @@
-"""Zerlegt Paper-Text in ueberlappende Chunks mit Seitenzuordnung."""
+"""Split paper text into overlapping chunks with page assignment."""
 
 from __future__ import annotations
 
@@ -24,17 +24,17 @@ class Chunk:
 
 
 def normalize(text: str) -> str:
-    """Repariert typische PDF-Artefakte."""
+    """Repair common PDF artifacts."""
     text = text.replace("\r\n", "\n")
     text = re.sub(r"-\n(?=[a-zaeoeue])", "", text)
-    text = re.sub(r"(?<![\n])\n(?![\n])", " ", text) 
+    text = re.sub(r"(?<![\n])\n(?![\n])", " ", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
 def strip_references(pages: list[str]) -> list[str]:
-    """Schneidet das Literaturverzeichnis weg - es verzerrt sonst jede Suche."""
+    """Cut off the bibliography - it otherwise distorts every search."""
     n = len(pages)
     for i in range(max(0, n // 2), n):
         match = _REFERENCES.search(pages[i])
@@ -44,7 +44,7 @@ def strip_references(pages: list[str]) -> list[str]:
 
 
 def _flatten(pages: list[str]) -> tuple[str, list[tuple[int, int, int]]]:
-    """Fuegt Seiten zu einem Text zusammen und merkt sich die Zeichen-Offsets."""
+    """Join pages into one text and remember the character offsets."""
     parts: list[str] = []
     offsets: list[tuple[int, int, int]] = []
     cursor = 0
@@ -66,7 +66,7 @@ def _page_for(offsets: list[tuple[int, int, int]], pos: int) -> int:
 
 
 def chunk_pages(pages: list[str]) -> list[Chunk]:
-    """Sliding Window ueber den Volltext, Schnitt an Absatz- oder Satzgrenzen."""
+    """Sliding window over the full text, cutting at paragraph or sentence bounds."""
     full, offsets = _flatten(strip_references(pages))
     if not full:
         return []

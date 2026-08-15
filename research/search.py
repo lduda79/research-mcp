@@ -1,4 +1,4 @@
-"""Lesende Zugriffe auf die Bibliothek - wird vom MCP-Server benutzt."""
+"""Read access to the library - used by the MCP server."""
 
 from __future__ import annotations
 
@@ -18,11 +18,10 @@ def _snippet(text: str, max_len: int = 400) -> str:
 def semantic_search(
     query: str,
     limit: int = 5,
-    projekt: str | None = None,
-    bereich: str | None = None,
+    project: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
-    """Vektorsuche ueber alle Chunks. Gibt Treffer mit Quellenangabe zurueck."""
+    """Vector search over all chunks. Returns hits with their source."""
     from .embeddings import embed_query
 
     own_conn = conn is None
@@ -30,10 +29,10 @@ def semantic_search(
     try:
         vector = sqlite_vec.serialize_float32(embed_query(query))
 
-        # Die Vektorsuche kennt die Projekt-Spalte nicht - sie liefert die k
-        # aehnlichsten Chunks der ganzen Datenbank. Wird danach gefiltert,
-        # bleiben ohne Ueberholen zu wenige uebrig.
-        k = limit * 8 if (projekt or bereich) else limit
+        # The vector search does not know the project column - it returns the k
+        # nearest chunks of the whole database. When filtering afterwards, too
+        # few would remain without overfetching.
+        k = limit * 8 if project else limit
 
         rows = conn.execute(
             """
@@ -41,8 +40,7 @@ def semantic_search(
                    p.title         AS title,
                    p.authors       AS authors,
                    p.year          AS year,
-                   p.projekt       AS projekt,
-                   p.bereich       AS bereich,
+                   p.project       AS project,
                    p.file_path     AS file_path,
                    c.page_start    AS page_start,
                    c.page_end      AS page_end,
@@ -55,12 +53,11 @@ def semantic_search(
             ) AS v
             JOIN chunks c ON c.id = v.chunk_id
             JOIN papers p ON p.id = c.paper_id
-            WHERE (? IS NULL OR p.projekt = ?)
-              AND (? IS NULL OR p.bereich = ?)
+            WHERE (? IS NULL OR p.project = ?)
             ORDER BY v.distance
             LIMIT ?
             """,
-            (vector, k, projekt, projekt, bereich, bereich, limit),
+            (vector, k, project, project, limit),
         ).fetchall()
 
         return [
@@ -69,8 +66,7 @@ def semantic_search(
                 "title": r["title"],
                 "authors": r["authors"],
                 "year": r["year"],
-                "projekt": r["projekt"],
-                "bereich": r["bereich"],
+                "project": r["project"],
                 "pages": f"{r['page_start']}-{r['page_end']}",
                 "snippet": _snippet(r["text"]),
                 "score": round(1.0 - r["distance"] / 2.0, 3),
@@ -83,17 +79,17 @@ def semantic_search(
             conn.close()
 
 
-def list_projekte(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
-    """Alle Projekte mit Anzahl der Paper."""
+def list_projects(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    """All projects with their paper count."""
     own_conn = conn is None
     conn = conn or connect()
     try:
         rows = conn.execute(
             """
-            SELECT projekt, bereich, COUNT(*) AS n_papers
+            SELECT project, COUNT(*) AS n_papers
             FROM papers
-            GROUP BY projekt, bereich
-            ORDER BY projekt, n_papers DESC
+            GROUP BY project
+            ORDER BY project, n_papers DESC
             """
         ).fetchall()
         return [dict(r) for r in rows]
@@ -103,18 +99,18 @@ def list_projekte(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]
 
 
 def list_papers(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
-    """Alle indexierten Paper mit Anzahl der Chunks."""
+    """All indexed papers with their chunk count."""
     own_conn = conn is None
     conn = conn or connect()
     try:
         rows = conn.execute(
             """
-            SELECT p.id, p.title, p.authors, p.year, p.projekt, p.bereich, p.arxiv_id, p.n_pages,
+            SELECT p.id, p.title, p.authors, p.year, p.project, p.arxiv_id, p.n_pages,
                    COUNT(c.id) AS n_chunks
             FROM papers p
             LEFT JOIN chunks c ON c.paper_id = p.id
             GROUP BY p.id
-            ORDER BY p.projekt, p.bereich, p.year DESC, p.title
+            ORDER BY p.project, p.year DESC, p.title
             """
         ).fetchall()
         return [dict(r) for r in rows]
@@ -124,13 +120,13 @@ def list_papers(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
 
 
 def get_paper_text(paper_id: int, max_chars: int = 6000, conn: sqlite3.Connection | None = None) -> dict[str, Any]:
-    """Zusammenhaengender Text eines Papers, fuer tieferes Nachlesen."""
+    """Contiguous text of a paper, for deeper reading."""
     own_conn = conn is None
     conn = conn or connect()
     try:
         paper = conn.execute("SELECT * FROM papers WHERE id = ?", (paper_id,)).fetchone()
         if paper is None:
-            return {"error": f"Kein Paper mit id={paper_id}"}
+            return {"error": f"No paper with id={paper_id}"}
 
         rows = conn.execute(
             "SELECT text FROM chunks WHERE paper_id = ? ORDER BY chunk_index",
@@ -138,34 +134,33 @@ def get_paper_text(paper_id: int, max_chars: int = 6000, conn: sqlite3.Connectio
         ).fetchall()
 
         full = "\n\n".join(r["text"] for r in rows)
-        truncated = len(full) > max_chars
         return {
             "title": paper["title"],
             "authors": paper["authors"],
             "year": paper["year"],
             "text": full[:max_chars],
-            "truncated": truncated,
+            "truncated": len(full) > max_chars,
         }
     finally:
         if own_conn:
             conn.close()
 
+
 def find_evidence(
     statement: str,
     limit: int = 5,
-    projekt: str | None = None,
+    project: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
-    """Sucht Belegstellen fuer eine EINZELNE Aussage - Basis des Citation Assistant.
+    """Find supporting passages for a SINGLE statement - core of the citation assistant.
 
-    Anders als semantic_search gibt diese Funktion den VOLLEN Chunk-Text zurueck
-    (nicht die gekuerzte Vorschau), damit das Modell im Chat inhaltlich pruefen
-    kann, ob die Passage die Aussage wirklich stuetzt. Ausserdem enthaelt jeder
-    Treffer die arxiv_id und den chunk_index - fuer spaetere Verknuepfung mit
-    einem .bib-Key und fuer die Evaluation.
+    Unlike semantic_search this returns the FULL chunk text (not the shortened
+    preview), so the model in the chat can judge whether the passage really
+    supports the statement. Each hit also carries the arxiv_id and chunk_index -
+    for later linking to a .bib key and for evaluation.
 
-    Die Rueckgabe ist nach Aehnlichkeit absteigend geordnet (bester zuerst), was
-    recall@k und MRR direkt auswertbar macht.
+    The result is ordered by similarity, best first, which makes recall@k and
+    MRR directly measurable.
     """
     from .embeddings import embed_query
 
@@ -173,7 +168,7 @@ def find_evidence(
     conn = conn or connect()
     try:
         vector = sqlite_vec.serialize_float32(embed_query(statement))
-        k = limit * 8 if projekt else limit
+        k = limit * 8 if project else limit
 
         rows = conn.execute(
             """
@@ -182,8 +177,7 @@ def find_evidence(
                    p.authors       AS authors,
                    p.year          AS year,
                    p.arxiv_id      AS arxiv_id,
-                   p.projekt       AS projekt,
-                   p.bereich       AS bereich,
+                   p.project       AS project,
                    p.file_path     AS file_path,
                    c.chunk_index   AS chunk_index,
                    c.page_start    AS page_start,
@@ -197,11 +191,11 @@ def find_evidence(
             ) AS v
             JOIN chunks c ON c.id = v.chunk_id
             JOIN papers p ON p.id = c.paper_id
-            WHERE (? IS NULL OR p.projekt = ?)
+            WHERE (? IS NULL OR p.project = ?)
             ORDER BY v.distance
             LIMIT ?
             """,
-            (vector, k, projekt, projekt, limit),
+            (vector, k, project, project, limit),
         ).fetchall()
 
         return [
@@ -212,8 +206,7 @@ def find_evidence(
                 "authors": r["authors"],
                 "year": r["year"],
                 "arxiv_id": r["arxiv_id"],
-                "projekt": r["projekt"],
-                "bereich": r["bereich"],
+                "project": r["project"],
                 "page": (
                     str(r["page_start"])
                     if r["page_start"] == r["page_end"]

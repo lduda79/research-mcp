@@ -1,7 +1,7 @@
-"""MCP-Server fuer den eigenen Forschungs-Stack.
+"""MCP server for the personal research stack.
 
-Wichtig: Bei stdio-Transport laeuft das MCP-Protokoll ueber stdout.
-Niemals print() benutzen - Logging geht nach stderr.
+Important: with stdio transport the MCP protocol runs over stdout.
+Never use print() - logging goes to stderr.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import sys
 
 from mcp.server.fastmcp import FastMCP
 
-from research.search import find_evidence, get_paper_text, list_papers, list_projekte, semantic_search
+from research.search import find_evidence, get_paper_text, list_papers, list_projects as _list_projects, semantic_search
 from research.experiments import (
     compare_experiments as _compare_experiments,
     get_experiment as _get_experiment,
@@ -19,11 +19,10 @@ from research.experiments import (
     list_experiments as _list_experiments,
     summarize_project as _summarize_project,
 )
-
 from research.files import read_text_file, list_files
 from research.thesis import parse_thesis
 
-CODE_SUFFIXES = (".py", ".toml", ".md", ".txt", ".cfg", ".ini")
+CODE_SUFFIXES = (".py", ".toml", ".md", ".txt", ".cfg", ".ini", ".yaml", ".yml")
 THESIS_SUFFIXES = (".tex", ".md", ".markdown", ".txt")
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
@@ -33,268 +32,244 @@ mcp = FastMCP("research")
 
 
 # ---------------------------------------------------------------------------
-# Paper-Bibliothek
+# Paper library
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def search_papers(
-    query: str,
-    limit: int = 5,
-    projekt: str | None = None,
-    bereich: str | None = None,
-) -> list[dict]:
-    """Durchsucht die lokale Paper-Bibliothek inhaltlich nach einem Thema.
+def search_papers(query: str, limit: int = 5, project: str | None = None) -> list[dict]:
+    """Search the local paper library by topic.
 
-    Findet Textstellen auch dann, wenn andere Begriffe verwendet werden als in
-    der Suchanfrage. Gibt Textausschnitte mit Titel, Jahr und Seitenzahl zurueck.
-    Benutze dieses Tool, um herauszufinden, was in den gelesenen Papern zu einem
-    Thema steht - etwa um einen Befund aus den Experimenten mit der Literatur
-    abzugleichen.
+    Finds passages even when they use different words than the query. Returns
+    text snippets with title, year and page. Use this to find what the read
+    papers say about a topic - e.g. to check a finding from the experiments
+    against the literature.
 
     Args:
-        query: Thema oder Frage in natuerlicher Sprache, z.B. "warum Warmup beim Training"
-        limit: Maximale Anzahl der Textstellen (1-20)
-        projekt: Optional auf ein Projekt einschraenken, z.B. "masterarbeit".
-                 Weglassen, um die gesamte Bibliothek zu durchsuchen.
-        bereich: Optional auf einen Bereich innerhalb des Projekts einschraenken,
-                 z.B. "baselines" oder "related-work". Gueltige Werte liefert
-                 list_projects. Weglassen, um alle Bereiche zu durchsuchen.
+        query: topic or question in natural language, e.g. "why warmup during training"
+        limit: maximum number of passages (1-20)
+        project: optional, restrict to one project, e.g. "masterarbeit".
+                 Omit to search the whole library.
     """
     limit = max(1, min(limit, 20))
     try:
-        results = semantic_search(query, limit=limit, projekt=projekt, bereich=bereich)
+        results = semantic_search(query, limit=limit, project=project)
     except Exception as exc:
-        log.exception("Suche fehlgeschlagen")
-        return [{"error": f"Suche fehlgeschlagen: {exc}"}]
+        log.exception("Search failed")
+        return [{"error": f"Search failed: {exc}"}]
 
     if not results:
-        teile = [f"Projekt '{projekt}'" if projekt else "", f"Bereich '{bereich}'" if bereich else ""]
-        eingrenzung = " in " + " / ".join(t for t in teile if t) if (projekt or bereich) else ""
-        return [{"info": f"Keine Treffer{eingrenzung}. Bibliothek schon indexiert? (uv run ingest.py)"}]
+        scope = f" in project '{project}'" if project else ""
+        return [{"info": f"No hits{scope}. Is the library indexed? (uv run ingest.py)"}]
     return results
 
 
 @mcp.tool()
 def list_projects() -> list[dict]:
-    """Zeigt alle Projekte und Bereiche der Paper-Bibliothek mit Anzahl der Paper.
+    """Show all projects of the paper library with their paper count.
 
-    Ein Projekt ist die oberste Gliederung (z.B. "masterarbeit"), ein Bereich
-    eine Untergliederung darin (z.B. "baselines", "related-work"). Benutze
-    dieses Tool, bevor du eine Suche einschraenkst, um die gueltigen Namen zu
-    erfahren.
+    Use this before restricting a search, to learn the valid project names.
     """
-    projekte = list_projekte()
-    if not projekte:
-        return [{"info": "Bibliothek ist leer. PDFs nach data/papers/<projekt>/ legen und 'uv run ingest.py' ausfuehren."}]
-    return projekte
+    projects = _list_projects()
+    if not projects:
+        return [{"info": "Library is empty. Add PDFs and run 'uv run ingest.py'."}]
+    return projects
 
 
 @mcp.tool()
 def list_library() -> list[dict]:
-    """Listet alle indexierten Paper der Bibliothek mit Titel, Jahr und Umfang auf.
+    """List all indexed papers with title, year and size.
 
-    Benutze dieses Tool, um einen Ueberblick zu bekommen, welche Paper ueberhaupt
-    verfuegbar sind, bevor du inhaltlich suchst.
+    Use this for an overview of which papers are available before searching.
     """
     papers = list_papers()
     if not papers:
-        return [{"info": "Bibliothek ist leer. PDFs nach data/papers/ legen und 'uv run ingest.py' ausfuehren."}]
+        return [{"info": "Library is empty. Add PDFs and run 'uv run ingest.py'."}]
     return papers
 
 
 @mcp.tool()
 def read_paper(paper_id: int, max_chars: int = 6000) -> dict:
-    """Liest den Volltext eines Papers, um Details nachzuschlagen.
+    """Read the full text of a paper to look up details.
 
-    Nutze zuerst search_papers oder list_library, um die paper_id zu bekommen.
+    Use search_papers or list_library first to get the paper_id.
 
     Args:
-        paper_id: Die numerische ID aus search_papers oder list_library
-        max_chars: Maximale Textlaenge, die zurueckgegeben wird
+        paper_id: the numeric id from search_papers or list_library
+        max_chars: maximum text length to return
     """
     return get_paper_text(paper_id, max_chars=max_chars)
 
 
 # ---------------------------------------------------------------------------
-# Experimente
+# Experiments
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def analyze_project(projekt: str, metric: str | None = None) -> dict:
-    """Fasst ALLE Laeufe eines Projekts in einem Aufruf zusammen - fuer die Gesamtanalyse.
+def analyze_project(project: str, metric: str | None = None) -> dict:
+    """Summarize ALL runs of a project in one call - for the overall analysis.
 
-    Das ist das richtige Tool fuer Fragen wie "analysiere alle meine Testlaeufe",
-    "welche Hyperparameter haengen mit dem Ergebnis zusammen", "gibt es Ausreisser"
-    oder "was sollte ich als naechstes testen". Liefert in einem Objekt:
+    This is the right tool for questions like "analyze all my test runs",
+    "which hyperparameters relate to the result", "are there outliers" or
+    "what should I test next". Returns in one object:
 
-    - jeden Lauf mit flachen Hyperparametern und zusammengefassten Metriken
-    - welche Hyperparameter ueberhaupt variiert wurden und welche konstant sind
-    - Korrelationen zwischen numerischen Hyperparametern und JEDER Metrik
-    - die verfuegbaren Metriknamen und die Laeufe mit hoher Fold-Streuung
+    - each run with flat hyperparameters and summarized metrics
+    - which hyperparameters were varied and which are constant
+    - correlations between numeric hyperparameters and EVERY metric
+    - the available metric names and the runs with high fold spread
 
-    Die Korrelationen sind deskriptiv und beruhen oft auf wenigen Laeufen - sie
-    sind Anhaltspunkte, kein Kausalnachweis. Deute sie im Kontext.
+    Correlations are descriptive and often based on few runs - they are hints,
+    not causal proof. Interpret them in context.
 
-    Fuer Vorschlaege, was als Naechstes zu testen ist, kannst du die Befunde
-    anschliessend mit search_papers gegen die Literatur abgleichen.
+    For suggestions on what to test next, you can afterwards match the findings
+    against the literature with search_papers.
 
     Args:
-        projekt: Name des Projekts, z.B. "masterarbeit"
-        metric: Optional die Zielmetrik, die im Fokus stehen soll, z.B.
-                "std_val_dbm_mse". Wird sie weggelassen, waehlt das Tool selbst
-                eine aus - korreliert wird ohnehin gegen alle Metriken. Die
-                gueltigen Namen stehen im Feld "verfuegbare_metriken".
+        project: name of the project, e.g. "masterarbeit"
+        metric: optional target metric to focus on, e.g. "std_val_dbm_mse".
+                If omitted the tool picks one - correlation runs over all metrics
+                anyway. Valid names are in the "available_metrics" field.
     """
-    return _summarize_project(projekt, metric=metric)
+    return _summarize_project(project, metric=metric)
 
 
 @mcp.tool()
-def list_experiments(projekt: str | None = None) -> list[dict]:
-    """Listet Trainings- und Testlaeufe mit Modell, Status und Datum auf.
+def list_experiments(project: str | None = None) -> list[dict]:
+    """List training and test runs with model, status and date.
 
-    Nur der Ueberblick. Fuer eine Gesamtanalyse aller Laeufe nutze
-    analyze_project, fuer einen einzelnen Lauf get_experiment.
+    Overview only. For an overall analysis of all runs use analyze_project,
+    for a single run use get_experiment.
 
     Args:
-        projekt: Optional auf ein Projekt einschraenken, z.B. "masterarbeit".
-                 Weglassen, um alle Laeufe zu sehen.
+        project: optional, restrict to one project, e.g. "masterarbeit".
+                 Omit to see all runs.
     """
-    runs = _list_experiments(projekt)
+    runs = _list_experiments(project)
     if not runs:
-        return [{"info": "Keine Experimente gefunden. Ergebnisse nach data/experiments/<projekt>/<run_id>/ legen."}]
+        return [{"info": "No experiments found. Put results under the project's experiments folder."}]
     return runs
 
 
 @mcp.tool()
-def get_experiment(run_id: str, projekt: str | None = None) -> dict:
-    """Gibt Hyperparameter und Ergebnisse eines einzelnen Laufs vollstaendig zurueck.
+def get_experiment(run_id: str, project: str | None = None) -> dict:
+    """Return hyperparameters and results of a single run in full.
 
-    Nutze zuerst list_experiments oder analyze_project, um gueltige run_ids zu
-    bekommen.
+    Use list_experiments or analyze_project first to get valid run_ids.
 
     Args:
-        run_id: Name des Laufs, z.B. "dcgan_run_005"
-        projekt: Optional, um die Suche einzugrenzen
+        run_id: name of the run, e.g. "dcgan_run_005"
+        project: optional, to narrow the search
     """
-    return _get_experiment(run_id, projekt)
+    return _get_experiment(run_id, project)
 
 
 @mcp.tool()
-def get_fold_summary(run_id: str, projekt: str | None = None) -> dict:
-    """Fasst k-fold-Cross-Validation-Ergebnisse eines Laufs statistisch zusammen.
+def get_fold_summary(run_id: str, project: str | None = None) -> dict:
+    """Summarize k-fold cross-validation results of a run statistically.
 
-    Gibt pro Metrik Mittelwert, Standardabweichung, Minimum und Maximum ueber
-    alle Folds zurueck - nicht die Rohwerte. Warnt automatisch, wenn eine
-    Metrik stark ueber die Folds streut (Hinweis auf instabiles Training oder
-    einen unguenstigen Split).
+    Returns per metric the mean, standard deviation, minimum and maximum across
+    all folds - not the raw values. Warns automatically when a metric varies
+    strongly across folds (a hint of unstable training or an unfavorable split).
 
     Args:
-        run_id: Name des Laufs, z.B. "dcgan_run_005"
-        projekt: Optional, um die Suche einzugrenzen
+        run_id: name of the run, e.g. "dcgan_run_005"
+        project: optional, to narrow the search
     """
-    return _get_fold_summary(run_id, projekt)
+    return _get_fold_summary(run_id, project)
 
 
 @mcp.tool()
-def compare_experiments(run_ids: list[str], projekt: str | None = None) -> dict:
-    """Vergleicht mehrere Laeufe und hebt hervor, was sie unterscheidet.
+def compare_experiments(run_ids: list[str], project: str | None = None) -> dict:
+    """Compare several runs and highlight what differs.
 
-    Zeigt nur die *abweichenden* Hyperparameter (nicht die ganze Config) und
-    stellt die Ergebnis-Metriken nebeneinander. Ideal fuer die gezielte Frage,
-    welche einzelne Konfigurationsaenderung welchen Effekt hatte. Fuer den
-    Gesamtueberblick ueber alle Laeufe nutze stattdessen analyze_project.
+    Shows only the *differing* hyperparameters (not the whole config) and puts
+    the result metrics side by side. Ideal for the targeted question of which
+    single configuration change had which effect. For the overall picture across
+    all runs use analyze_project instead.
 
     Args:
-        run_ids: Liste von Laufnamen, z.B. ["dcgan_run_005", "dcgan_run_006"]
-        projekt: Optional, um die Suche einzugrenzen
+        run_ids: list of run names, e.g. ["dcgan_run_005", "dcgan_run_006"]
+        project: optional, to narrow the search
     """
-    return _compare_experiments(run_ids, projekt)
+    return _compare_experiments(run_ids, project)
 
 
 # ---------------------------------------------------------------------------
-# Citation Assistant
+# Citation assistant
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def find_citation_candidates(
-    statement: str,
-    limit: int = 5,
-    projekt: str | None = None,
-) -> list[dict]:
-    """Findet Belegstellen in der Bibliothek fuer eine EINZELNE Aussage.
+def find_citation_candidates(statement: str, limit: int = 5, project: str | None = None) -> list[dict]:
+    """Find supporting passages in the library for a SINGLE statement.
 
-    Kernwerkzeug des Citation Assistant. Fuer eine konkrete inhaltliche Aussage
-    aus der Thesis (z.B. "Warmup stabilisiert das Training") sucht dieses Tool
-    die aehnlichsten Passagen aus den eigenen Papern und gibt sie nach Relevanz
-    geordnet zurueck - jeweils mit vollem Passagentext, Paper, Seite, arXiv-ID
-    und Score.
+    Core tool of the citation assistant. For a concrete factual statement from
+    the thesis (e.g. "warmup stabilizes training") this searches the most
+    similar passages from the user's own papers and returns them ordered by
+    relevance - each with the full passage text, paper, page, arXiv id and score.
 
-    Wichtig fuer die Beurteilung: Pruefe anhand des zurueckgegebenen
-    Passagentexts, ob die Quelle die Aussage WIRKLICH stuetzt, bevor du sie
-    vorschlaegst. Schlage nur Treffer mit klarem inhaltlichem Bezug und
-    ausreichend hohem Score vor - lieber keinen Vorschlag als einen schwachen.
-    Nutze dieses Tool nur fuer zitierwuerdige Aussagen (Behauptungen ueber den
-    Stand der Forschung), nicht fuer Meta-Saetze wie "In diesem Kapitel zeigen
-    wir ...".
+    Important for judging: check against the returned passage text whether the
+    source REALLY supports the statement before proposing it. Only propose hits
+    with a clear topical match and a sufficiently high score - better no
+    proposal than a weak one. Use this only for citation-worthy statements
+    (claims about the state of research), not for meta-sentences like "in this
+    chapter we show ...".
 
     Args:
-        statement: Die einzelne Aussage, fuer die ein Beleg gesucht wird
-        limit: Maximale Anzahl der Kandidaten (geordnet, bester zuerst)
-        projekt: Optional auf ein Projekt einschraenken, z.B. "masterarbeit"
+        statement: the single statement to find support for
+        limit: maximum number of candidates (ordered, best first)
+        project: optional, restrict to one project, e.g. "masterarbeit"
     """
     limit = max(1, min(limit, 20))
     try:
-        candidates = find_evidence(statement, limit=limit, projekt=projekt)
+        candidates = find_evidence(statement, limit=limit, project=project)
     except Exception as exc:
-        log.exception("Belegsuche fehlgeschlagen")
-        return [{"error": f"Belegsuche fehlgeschlagen: {exc}"}]
+        log.exception("Evidence search failed")
+        return [{"error": f"Evidence search failed: {exc}"}]
 
     if not candidates:
-        return [{"info": "Keine Belegstellen gefunden. Ist die Bibliothek indexiert?"}]
+        return [{"info": "No supporting passages found. Is the library indexed?"}]
     return candidates
 
 
 # ---------------------------------------------------------------------------
-# Datei-/Code-Zugriff
+# File / code access
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
 def read_code(path: str, max_chars: int = 100_000) -> dict:
-    """Reads a source file from the project so its current content is available.
+    """Read a source file from the project so its current content is available.
 
     Use this to see the up-to-date version of a file in the research-mcp
-    project (e.g. "server.py", "research/thesis.py", "pyproject.toml")
-    instead of relying on a pasted copy. Only files inside the project and
-    of an allowed type can be read.
+    project (e.g. "server.py", "research/thesis.py", "pyproject.toml") instead
+    of relying on a pasted copy. Only files inside allowed directories and of an
+    allowed type can be read.
 
     Args:
-        path: Project-relative path, e.g. "research/search.py"
-        max_chars: Maximum number of characters to return
+        path: project-relative path, e.g. "research/search.py"
+        max_chars: maximum number of characters to return
     """
     return read_text_file(path, CODE_SUFFIXES, max_chars=max_chars)
 
 
 @mcp.tool()
 def list_code() -> list[dict]:
-    """Lists the source files of the project that read_code can open."""
+    """List the source files of the project that read_code can open."""
     files = list_files(CODE_SUFFIXES)
     return files or [{"info": "No source files found."}]
 
 
 @mcp.tool()
 def read_thesis(path: str, markdown: bool = False, max_chars: int = 100_000) -> dict:
-    """Reads a thesis file (LaTeX or Markdown) and splits it into sentences.
+    """Read a thesis file (LaTeX or Markdown) and split it into sentences.
 
     Returns each sentence with whether it carries a citation and which cite
-    keys, so the model can separate uncited claims from cited ones. This is
-    the entry point for the citation assistant: read the thesis, then judge
-    which uncited sentences are citation-worthy and search the library for
-    support.
+    keys, so the model can separate uncited claims from cited ones. This is the
+    entry point for the citation assistant: read the thesis, then judge which
+    uncited sentences are citation-worthy and search the library for support.
 
     Args:
-        path: Project-relative path to the .tex or .md file
-        markdown: Set true for Markdown/pandoc ([@key]) instead of LaTeX
-        max_chars: Maximum characters of the file to parse
+        path: path to the .tex or .md file (inside a configured project folder)
+        markdown: set true for Markdown/pandoc ([@key]) instead of LaTeX
+        max_chars: maximum characters of the file to parse
     """
     raw = read_text_file(path, THESIS_SUFFIXES, max_chars=max_chars)
     if "error" in raw:

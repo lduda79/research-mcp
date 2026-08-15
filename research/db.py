@@ -1,4 +1,4 @@
-"""SQLite-Zugriff und Schema fuer die Paper-Bibliothek."""
+"""SQLite access and schema for the paper library."""
 
 from __future__ import annotations
 
@@ -7,17 +7,25 @@ from pathlib import Path
 
 import sqlite_vec
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = PROJECT_ROOT / "data" / "library.db"
+from .config import PROJECT_ROOT, load_config
+
 EMBEDDING_DIM = 384
+
+
+def _db_path() -> Path:
+    """Database location comes from config.yaml (falls back to data/library.db)."""
+    try:
+        return load_config().database
+    except Exception:
+        return PROJECT_ROOT / "data" / "library.db"
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS papers (
     id          INTEGER PRIMARY KEY,
     file_path   TEXT    NOT NULL UNIQUE,
     file_hash   TEXT    NOT NULL,
-    projekt     TEXT    NOT NULL DEFAULT 'sonstiges',
-    bereich     TEXT,
+    project     TEXT    NOT NULL DEFAULT 'misc',
     title       TEXT,
     authors     TEXT,
     year        INTEGER,
@@ -37,7 +45,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_paper ON chunks(paper_id);
-CREATE INDEX IF NOT EXISTS idx_papers_projekt ON papers(projekt, bereich);
+CREATE INDEX IF NOT EXISTS idx_papers_project ON papers(project);
 
 CREATE TABLE IF NOT EXISTS notes (
     id           INTEGER PRIMARY KEY,
@@ -73,8 +81,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
-    """Oeffnet die Datenbank und laedt die sqlite-vec Erweiterung."""
-    path = Path(db_path) if db_path else DB_PATH
+    """Open the database and load the sqlite-vec extension."""
+    path = Path(db_path) if db_path else _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(path)
@@ -89,7 +97,7 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Legt alle Tabellen an. Idempotent - mehrfacher Aufruf schadet nicht."""
+    """Create all tables. Idempotent - safe to call repeatedly."""
     conn.executescript(SCHEMA)
     conn.executescript(VECTOR_SCHEMA)
     conn.executescript(FTS_SCHEMA)
