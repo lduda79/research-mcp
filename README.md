@@ -1,5 +1,7 @@
 # research-mcp
 
+![tests](https://github.com/lduda79/research-mcp/actions/workflows/tests.yml/badge.svg)
+
 A local Model Context Protocol server that turns a personal research workspace —
 papers *and* experiment results — into tools any MCP-capable client (Claude Desktop,
 Cursor, VS Code) can query.
@@ -186,6 +188,21 @@ The `templates/` directory contains annotated templates and `save_run.py`, a hel
 call at the end of training that writes both files consistently (it derives the
 summary values from the per-fold data, so they can never disagree).
 
+## Tests
+
+The deterministic core is covered by a pytest suite: configuration resolution,
+text chunking, the thesis/citation parser and the experiment analysis. These
+modules need neither the embedding model nor a database, so the tests run in a
+fraction of a second.
+
+```bash
+uv run pytest            # run everything
+uv run pytest -v         # list each test
+```
+
+The suite runs automatically on every push via GitHub Actions
+(`.github/workflows/tests.yml`) against Python 3.12.
+
 ## Design decisions
 
 **Paths are configurable, data lives where you work.** A `config.yaml` maps each project
@@ -241,12 +258,11 @@ Python MCP SDK (FastMCP) · SQLite + sqlite-vec · sentence-transformers
 Working: configurable project paths, PDF ingestion with duplicate and rename handling,
 semantic search with project scoping, arXiv metadata lookup, full experiment analysis
 (per-run summaries, k-fold statistics, cross-run comparison and hyperparameter
-correlations), and a citation assistant that proposes supporting passages for uncited
-statements.
+correlations), a citation assistant that proposes supporting passages for uncited
+statements, and a pytest suite for the deterministic core running in CI.
 
 Planned:
 
-- Test suite covering chunking, retrieval and experiment aggregation, running in CI
 - Hybrid retrieval (BM25 via FTS5 + dense, combined with reciprocal rank fusion)
 - External paper discovery (arXiv / Semantic Scholar) so literature cross-checks can
   reach beyond the local library
