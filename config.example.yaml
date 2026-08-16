@@ -1,0 +1,20 @@
+# The vector database stays inside research-mcp — it is a derived index.
+database: library.db
+
+# Default subfolder names inside each project. Name your folders the same way
+# everywhere and you only need each project's "root" below.
+defaults:
+  papers: papers
+  experiments: experiments
+  thesis: text
+
+projects:
+  my_project:
+    root: ~/Desktop/my_project
+    # uses the defaults
+
+  # A second project may override folder names or omit a folder:
+  # my_other_project:
+  #   root: ~/Desktop/my_other_project
+  #   experiments: runs
+  #   thesis: null

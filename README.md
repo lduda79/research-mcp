@@ -124,18 +124,18 @@ database: library.db
 # Default subfolder names inside each project. Name your folders the same way
 # everywhere and you only need each project's "root" below.
 defaults:
-  papers: Literatur
-  experiments: Tests
-  thesis: Text
+  papers: papers
+  experiments: experiments
+  thesis: text
 
 projects:
-  masterarbeit:
-    root: ~/Desktop/Masterarbeit
-    # uses the defaults: Literatur, Tests, Text
+  my_project:
+    root: ~/Desktop/my_project
+    # uses the defaults
 
   # A second project may override folder names or omit a folder:
-  # rf_slam:
-  #   root: ~/Desktop/RF-SLAM
+  # my_other_project:
+  #   root: ~/Desktop/my_other_project
   #   experiments: runs
   #   thesis: null
 ```
@@ -153,12 +153,12 @@ plus the folders named in `config.yaml` — nothing outside can be read.
 
 ## Papers
 
-Put PDFs in a project's papers folder (e.g. `~/Desktop/Masterarbeit/Literatur`). All
+Put PDFs in a project's papers folder (e.g. `~/Desktop/my_project/papers`). All
 papers of a project are indexed under that project's name. Index them:
 
 ```bash
 uv run ingest.py                       # index all projects from config.yaml
-uv run ingest.py --project masterarbeit  # only one project
+uv run ingest.py --project my_project  # only one project
 uv run ingest.py --path ~/some/folder --project scratch  # an ad-hoc folder
 uv run ingest.py --force               # re-index everything
 uv run ingest.py --stats               # show current contents
@@ -172,8 +172,8 @@ Store each run under a project's experiments folder, one subfolder per run, with
 hyperparameter file and a results file:
 
 ```
-~/Desktop/Masterarbeit/Tests/
-└── cv17_lower_lr/
+~/Desktop/my_project/experiments/
+└── run1_lower_lr/
     ├── hparams.json
     └── results.json
 ```
