@@ -1,19 +1,21 @@
-# Python-generated files
+# Python
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-data/
-*.db
-*.db-shm
-*.db-wal
+*.py[cod]
 .venv/
-__pycache__/
-.env
+*.egg-info/
 
-# Other
+# uv
+.uv/
+
+# pytest
+.pytest_cache/
+
+# Project data — never commit the index or personal paths
+library.db
+data/
 config.yaml
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
