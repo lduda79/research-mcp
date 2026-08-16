@@ -1,8 +1,7 @@
-"""Holt verlaessliche Metadaten von der arXiv-API.
+"""Fetch reliable metadata from the arXiv API.
 
-Die Heuristiken auf der PDF-Titelseite liegen oft daneben (Lizenztexte,
-Revisionsdaten). Wenn eine arXiv-ID gefunden wurde, ist die API die
-bessere Quelle.
+The heuristics on a PDF title page are often wrong (license notices,
+revision dates). When an arXiv id is found, the API is the better source.
 """
 
 from __future__ import annotations
@@ -19,10 +18,10 @@ NS = {"a": "http://www.w3.org/2005/Atom"}
 
 
 def fetch_arxiv_metadata(arxiv_id: str, timeout: float = 10.0) -> dict | None:
-    """Fragt Titel, Autoren und Jahr zu einer arXiv-ID ab.
+    """Look up title, authors and year for an arXiv id.
 
-    Gibt None zurueck, wenn die ID unbekannt ist oder das Netz nicht geht -
-    die Indexierung darf daran nie scheitern.
+    Returns None when the id is unknown or the network is down - indexing must
+    never fail because of this.
     """
     try:
         response = httpx.get(
@@ -35,7 +34,7 @@ def fetch_arxiv_metadata(arxiv_id: str, timeout: float = 10.0) -> dict | None:
         response.raise_for_status()
         entry = ET.fromstring(response.text).find("a:entry", NS)
     except Exception as exc:
-        log.warning("arXiv-Abfrage fuer %s fehlgeschlagen: %s", arxiv_id, exc)
+        log.warning("arXiv lookup for %s failed: %s", arxiv_id, exc)
         return None
 
     if entry is None:
@@ -44,7 +43,7 @@ def fetch_arxiv_metadata(arxiv_id: str, timeout: float = 10.0) -> dict | None:
     raw_title = entry.findtext("a:title", default="", namespaces=NS)
     title = " ".join(raw_title.split())
 
-    # Unbekannte IDs liefern einen Fehler-Eintrag statt eines Papers
+    # Unknown ids return an error entry instead of a paper
     if not title or title.lower().startswith("error"):
         return None
 

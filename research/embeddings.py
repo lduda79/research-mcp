@@ -1,4 +1,4 @@
-"""Wandelt Text in Vektoren um. Modell wird beim ersten Aufruf geladen."""
+"""Turns text into vectors. The model is loaded on first use."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def get_model():
 
 
 def embed_texts(texts: list[str], batch_size: int = 32, progress: bool = False) -> np.ndarray:
-    """Gibt eine (n, 384)-Matrix normalisierter float32-Vektoren zurueck."""
+    """Return an (n, 384) matrix of normalized float32 vectors."""
     vectors = get_model().encode(
         texts,
         batch_size=batch_size,
