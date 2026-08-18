@@ -47,7 +47,7 @@ def search_papers(query: str, limit: int = 5, project: str | None = None) -> lis
     Args:
         query: topic or question in natural language, e.g. "why warmup during training"
         limit: maximum number of passages (1-20)
-        project: optional, restrict to one project, e.g. "masterarbeit".
+        project: optional, restrict to one project.
                  Omit to search the whole library.
     """
     limit = max(1, min(limit, 20))
@@ -124,7 +124,7 @@ def analyze_project(project: str, metric: str | None = None) -> dict:
     against the literature with search_papers.
 
     Args:
-        project: name of the project, e.g. "masterarbeit"
+        project: name of the project.
         metric: optional target metric to focus on, e.g. "std_val_dbm_mse".
                 If omitted the tool picks one - correlation runs over all metrics
                 anyway. Valid names are in the "available_metrics" field.
@@ -140,7 +140,7 @@ def list_experiments(project: str | None = None) -> list[dict]:
     for a single run use get_experiment.
 
     Args:
-        project: optional, restrict to one project, e.g. "masterarbeit".
+        project: optional, restrict to one project.
                  Omit to see all runs.
     """
     runs = _list_experiments(project)
@@ -216,7 +216,7 @@ def find_citation_candidates(statement: str, limit: int = 5, project: str | None
     Args:
         statement: the single statement to find support for
         limit: maximum number of candidates (ordered, best first)
-        project: optional, restrict to one project, e.g. "masterarbeit"
+        project: optional, restrict to one project.
     """
     limit = max(1, min(limit, 20))
     try:

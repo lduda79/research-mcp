@@ -70,7 +70,8 @@ contains no LLM — it just serves data over stdio.
 | Tool | Purpose |
 |---|---|
 | `find_citation_candidates` | For a single statement, returns the most similar passages from your own papers — full passage text, page and score — so the model can judge whether a source really supports the claim |
-| `read_thesis` | Reads a LaTeX/Markdown thesis and splits it into sentences, marking which already carry a citation |
+| `read_thesis` | Reads a LaTeX/Markdown thesis and splits it into sentences, marking which already carry a citation and grouping them by paragraph |
+| `audit_thesis` | Scans a whole thesis in one pass: collects the uncited sentences, groups them by paragraph, and returns candidate passages for each, so the model can propose where a citation is missing and which paper supports it |
 
 **Source access**
 
@@ -124,18 +125,18 @@ database: library.db
 # Default subfolder names inside each project. Name your folders the same way
 # everywhere and you only need each project's "root" below.
 defaults:
-  papers: Literatur
-  experiments: Tests
-  thesis: Text
+  papers: papers
+  experiments: experiments
+  thesis: text
 
 projects:
-  masterarbeit:
-    root: ~/Desktop/Masterarbeit
-    # uses the defaults: Literatur, Tests, Text
+  my_project:
+    root: ~/Desktop/my_project
+    # uses the defaults
 
   # A second project may override folder names or omit a folder:
-  # rf_slam:
-  #   root: ~/Desktop/RF-SLAM
+  # my_other_project:
+  #   root: ~/Desktop/my_other_project
   #   experiments: runs
   #   thesis: null
 ```
@@ -153,12 +154,12 @@ plus the folders named in `config.yaml` — nothing outside can be read.
 
 ## Papers
 
-Put PDFs in a project's papers folder (e.g. `~/Desktop/Masterarbeit/Literatur`). All
+Put PDFs in a project's papers folder (e.g. `~/Desktop/my_project/papers`). All
 papers of a project are indexed under that project's name. Index them:
 
 ```bash
 uv run ingest.py                       # index all projects from config.yaml
-uv run ingest.py --project masterarbeit  # only one project
+uv run ingest.py --project my_project  # only one project
 uv run ingest.py --path ~/some/folder --project scratch  # an ad-hoc folder
 uv run ingest.py --force               # re-index everything
 uv run ingest.py --stats               # show current contents
@@ -172,8 +173,8 @@ Store each run under a project's experiments folder, one subfolder per run, with
 hyperparameter file and a results file:
 
 ```
-~/Desktop/Masterarbeit/Tests/
-└── cv17_lower_lr/
+~/Desktop/my_project/experiments/
+└── run1_lower_lr/
     ├── hparams.json
     └── results.json
 ```
@@ -187,6 +188,21 @@ project may use its own metrics.
 The `templates/` directory contains annotated templates and `save_run.py`, a helper you
 call at the end of training that writes both files consistently (it derives the
 summary values from the per-fold data, so they can never disagree).
+
+## Citation assistant
+
+Two entry points work together to help place references while writing:
+
+- `read_thesis` parses a `.tex`/`.md` file into sentences, marks which already carry a
+  citation, and tags each sentence with its paragraph.
+- `audit_thesis` goes further in a single pass: it collects the uncited sentences,
+  groups them by paragraph, and looks up candidate passages from the library for each -
+  returning paper, page, full passage and score. The model then decides which uncited
+  sentences are actually citation-worthy (skipping meta-sentences) and whether a
+  paragraph deserves one shared citation or one per sentence.
+
+For a single ad-hoc statement, `find_citation_candidates` returns the same kind of
+ranked passages without reading a file.
 
 ## Tests
 
@@ -258,8 +274,9 @@ Python MCP SDK (FastMCP) · SQLite + sqlite-vec · sentence-transformers
 Working: configurable project paths, PDF ingestion with duplicate and rename handling,
 semantic search with project scoping, arXiv metadata lookup, full experiment analysis
 (per-run summaries, k-fold statistics, cross-run comparison and hyperparameter
-correlations), a citation assistant that proposes supporting passages for uncited
-statements, and a pytest suite for the deterministic core running in CI.
+correlations), a citation assistant that finds supporting passages for uncited
+statements and audits a whole thesis for missing citations, and a pytest suite for the
+deterministic core running in CI.
 
 Planned:
 
