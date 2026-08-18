@@ -230,6 +230,68 @@ def find_citation_candidates(statement: str, limit: int = 5, project: str | None
     return candidates
 
 
+@mcp.tool()
+def audit_thesis(
+    path: str,
+    markdown: bool = False,
+    limit_per_statement: int = 3,
+    max_statements: int = 40,
+) -> dict:
+    """Scan a thesis for uncited statements and suggest supporting papers.
+
+    Combines read_thesis and find_citation_candidates in one pass: it reads the
+    thesis, collects the sentences that carry NO citation, groups them by
+    paragraph, and for each uncited sentence looks up candidate passages from
+    the library. The result lets the model go through the thesis and propose,
+    per statement or per paragraph, where a citation could be added and which
+    paper (with page and passage) would support it.
+
+    Judgement stays with the model: not every uncited sentence is
+    citation-worthy (skip meta-sentences like "in this chapter we ..."), and a
+    whole paragraph may deserve a single citation rather than one per sentence -
+    the paragraph grouping is provided for exactly that decision.
+
+    Args:
+        path: path to the .tex or .md file (inside a configured project folder)
+        markdown: set true for Markdown/pandoc ([@key]) instead of LaTeX
+        limit_per_statement: how many candidate passages to return per statement
+        max_statements: safety cap on how many uncited statements to look up
+    """
+    raw = read_text_file(path, THESIS_SUFFIXES, max_chars=200_000)
+    if "error" in raw:
+        return raw
+
+    sentences = parse_thesis(raw["text"], markdown=markdown)
+    uncited = [s for s in sentences if not s.has_citation and len(s.text) > 40]
+
+    capped = uncited[:max_statements]
+    limit_per_statement = max(1, min(limit_per_statement, 10))
+
+    findings = []
+    for s in capped:
+        try:
+            candidates = find_evidence(s.text, limit=limit_per_statement)
+        except Exception as exc:
+            log.exception("Evidence lookup failed")
+            candidates = [{"error": f"lookup failed: {exc}"}]
+        findings.append({
+            "sentence_index": s.index,
+            "paragraph": s.paragraph,
+            "text": s.text,
+            "candidates": candidates,
+        })
+
+    return {
+        "path": raw["path"],
+        "n_sentences": len(sentences),
+        "n_cited": sum(1 for s in sentences if s.has_citation),
+        "n_uncited_considered": len(capped),
+        "n_uncited_total": len(uncited),
+        "truncated_statements": len(uncited) > max_statements,
+        "findings": findings,
+    }
+
+
 # ---------------------------------------------------------------------------
 # File / code access
 # ---------------------------------------------------------------------------
@@ -285,7 +347,8 @@ def read_thesis(path: str, markdown: bool = False, max_chars: int = 100_000) -> 
         "n_uncited": len(sentences) - cited,
         "sentences": [
             {"index": s.index, "text": s.text,
-             "has_citation": s.has_citation, "cite_keys": s.cite_keys}
+             "has_citation": s.has_citation, "cite_keys": s.cite_keys,
+             "paragraph": s.paragraph}
             for s in sentences
         ],
     }

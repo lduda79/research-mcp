@@ -54,6 +54,7 @@ _ENV_RE = {
     for env in _DROP_ENVIRONMENTS
 }
 _CITE_PLACEHOLDER = "\x00CITE\x00"
+_PARA_BREAK = "\x00PARA\x00"
 
 
 def strip_latex(text: str) -> str:
@@ -116,10 +117,16 @@ class ThesisSentence:
     text: str
     has_citation: bool
     cite_keys: list[str] = field(default_factory=list)
+    paragraph: int = 0
 
 
 def parse_thesis(text: str, markdown: bool = False) -> list[ThesisSentence]:
-    """Full path: raw text -> clean sentences with citation info."""
+    """Full path: raw text -> clean sentences with citation info.
+
+    Each sentence also carries a paragraph index, so a caller can tell which
+    sentences belong together - useful when a whole passage, not a single
+    sentence, should carry one citation.
+    """
     raw_citations = find_citations(text, markdown=markdown)
     if markdown:
         clean = text
@@ -127,18 +134,32 @@ def parse_thesis(text: str, markdown: bool = False) -> list[ThesisSentence]:
             clean = clean[:c.start] + _CITE_PLACEHOLDER + clean[c.end:]
     else:
         clean = strip_latex(text)
+
+    # Split into paragraphs first (blank line = paragraph break), then sentences
+    # within each, so we can attach a paragraph index to every sentence.
     key_queue = [c.keys for c in raw_citations]
-    sentences = split_sentences(clean)
     result: list[ThesisSentence] = []
     marker_index = 0
-    for i, sentence in enumerate(sentences):
-        n_markers = sentence.count(_CITE_PLACEHOLDER)
-        keys: list[str] = []
-        for _ in range(n_markers):
-            if marker_index < len(key_queue):
-                keys.extend(key_queue[marker_index])
-                marker_index += 1
-        display = sentence.replace(_CITE_PLACEHOLDER, "[CITE]").strip()
-        result.append(ThesisSentence(index=i, text=display,
-                                     has_citation=n_markers > 0, cite_keys=keys))
+    sent_index = 0
+
+    paragraphs = re.split(r"\n\s*\n", clean)
+    para_index = 0
+    for para in paragraphs:
+        sentences = split_sentences(para)
+        if not sentences:
+            continue
+        for sentence in sentences:
+            n_markers = sentence.count(_CITE_PLACEHOLDER)
+            keys: list[str] = []
+            for _ in range(n_markers):
+                if marker_index < len(key_queue):
+                    keys.extend(key_queue[marker_index])
+                    marker_index += 1
+            display = sentence.replace(_CITE_PLACEHOLDER, "[CITE]").strip()
+            result.append(ThesisSentence(index=sent_index, text=display,
+                                         has_citation=n_markers > 0, cite_keys=keys,
+                                         paragraph=para_index))
+            sent_index += 1
+        para_index += 1
+
     return result
