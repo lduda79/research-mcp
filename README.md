@@ -77,8 +77,8 @@ contains no LLM — it just serves data over stdio.
 
 | Tool | Purpose |
 |---|---|
-| `read_code` | Reads a source file of the project, confined to configured directories |
-| `list_code` | Lists the readable source files |
+| `read_code` | Reads a source file — the research-mcp checkout, plus any project that opts in with `read_code_allowed` — so the model can see your training code. Secret files are always blocked |
+| `list_code` | Lists the readable source files across the checkout and every opt-in project |
 
 ## Setup
 
@@ -149,8 +149,27 @@ database, separated by the `project` column.
 If no `config.yaml` is present, the server falls back to the classic layout
 (`data/papers`, `data/experiments`, `data/thesis`, `data/library.db`).
 
-The read tools (`read_code`, `read_thesis`) are confined to the research-mcp checkout
-plus the folders named in `config.yaml` — nothing outside can be read.
+By default the read tools only reach the research-mcp checkout and (for
+`read_thesis`) the configured project folders. To let `read_code` and
+`list_code` open a project's own source files — useful when you want help with
+your training code — set `read_code_allowed: true` on that project:
+ 
+```yaml
+projects:
+  my_project:
+    root: ~/Desktop/my_project
+    read_code_allowed: true
+    read_code_exclude:
+      - .env
+      - secrets/
+      - config/credentials.py
+```
+ 
+This is opt-in per project: without the flag, project code stays private. Even
+with it on, secret-bearing files (`.env`, `*.pem`, `*.key`, `id_rsa`, ...) are
+never readable, and `read_code_exclude` blocks further files or folders you
+name. Thesis reading is unaffected — it works for every configured project
+regardless of this flag.
 
 ## Papers
 
@@ -263,6 +282,14 @@ when an arXiv ID is present, the arXiv API overrides the heuristic entirely.
 `ingest.py` is idempotent — unchanged files are skipped, renamed files are detected and
 moved rather than re-embedded, and changed files are replaced along with their orphaned
 vectors (virtual tables are not covered by `ON DELETE CASCADE`).
+
+**Code reading is opt-in, secrets are always blocked.** `read_code` reaches a
+project's source only when that project sets `read_code_allowed: true`, so
+nothing is exposed by default. A hard block on secret files (`.env`, keys,
+certificates) applies even to opted-in projects and even if the user forgot to
+list them — forgetting to exclude a secret does not leak it. Per-project
+`read_code_exclude` entries block anything else the user names.
+ 
 
 ## Stack
 
